@@ -256,7 +256,7 @@ class Fei4RunBase(RunBase):
             for root, dirs, files in os.walk(self.working_dir):
                 for cfgfile in files:
                     cfg_root, cfg_ext = os.path.splitext(cfgfile)
-                    if cfg_root.startswith(''.join([str(run_number), '_', self.module_id])) and cfg_ext.endswith(".cfg"):
+                    if cfg_root.startswith(''.join([str(run_number), '_', self.module_id])) and cfg_ext.endswith(".yaml"):
                         return os.path.join(root, cfgfile)
 
         if not run_number:

@@ -223,11 +223,81 @@ class FEI4Register(object):
         '''
         if os.path.isfile(configuration_file):
             if not isinstance(configuration_file, tb.file.File) and os.path.splitext(configuration_file)[1].strip().lower() != ".h5":
-                self._load_configuration_from_text_file(configuration_file)
+                config_dict = self._load_configuration_from_yaml_file(configuration_file)
             else:
-                self._load_configuration_from_hdf5(configuration_file)
+                config_dict = self._load_configuration_from_hdf5(configuration_file)
         else:
             raise ValueError('Cannot find configuration file specified: %s' % configuration_file)
+
+        # FIXME loop over channels
+        if 'Chip_ID' in config_dict['Channels'][0]:
+            chip_id = config_dict['Channels'][0]['Chip_ID']
+            if self.chip_address:
+                pass
+            else:
+                self.broadcast = True if chip_id & 0x8 else False
+                self.set_chip_address(chip_id & 0x7)
+        elif 'Chip_Address' in config_dict['Channels'][0]:
+            chip_address = config_dict['Channels'][0]['Chip_Address']
+            if self.chip_address:
+                pass
+            else:
+                self.set_chip_address(chip_address)
+        else:
+            if self.chip_id_initialized:
+                pass
+            else:
+                raise ValueError('Chip address not specified')
+        if 'Flavor' in config_dict:
+            flavor = config_dict['Flavor']
+            if self.flavor:
+                pass
+            else:
+                self.init_fe_type(flavor)
+        else:
+            if self.flavor:
+                pass
+            else:
+                raise ValueError('Flavor not specified')
+
+        for key,value in config_dict.pop('Calibration_Parameters').iteritems():
+            if key in self.calibration_parameters:
+                self.calibration_parameters[key] = value
+            else:
+                self.miscellaneous[key] = value
+
+        for channel in config_dict['Channels']:
+            global_registers_configured = []
+            pixel_registers_configured = []
+            for key,value in channel.pop('Global_Registers').iteritems():
+                if key in self.global_registers:
+                    self.set_global_register_value(key, value)
+                    global_registers_configured.append(key)
+                else:
+                    self.miscellaneous[key] = value
+            for key,value in channel.pop('Pixel_Registers').iteritems():
+                if key in self.pixel_registers:
+                    self.set_pixel_register_value(key, value)
+                    pixel_registers_configured.append(key)
+                else:
+                    self.miscellaneous[key] = value
+
+            if 'Miscellaneous' in channel:
+                for key, value in channel.pop('Miscellaneous').iteritems():
+                    self.miscellaneous[key] = value
+
+            global_registers = self.get_global_register_attributes('name', readonly=False)
+            pixel_registers = self.pixel_registers.keys()
+            global_registers_not_configured = set(global_registers).difference(global_registers_configured)
+            pixel_registers_not_configured = set(pixel_registers).difference(pixel_registers_configured)
+            if global_registers_not_configured:
+                logging.warning("Channel {} - Following global register(s) not configured: {}".format(channel['Channel_Number'],', '.join('\'' + reg + '\'' for reg in global_registers_not_configured)))
+            if pixel_registers_not_configured:
+                logging.warning("Channel {} - Following pixel register(s) not configured: {}".format(channel['Channel_Number'],', '.join('\'' + reg + '\'' for reg in pixel_registers_not_configured)))
+            if self.miscellaneous:
+                logging.warning("Channel {} - Found following unknown parameter(s): {}".format(channel['Channel_Number'],', '.join('\'' + parameter + '\'' for parameter in self.miscellaneous.iterkeys())))
+
+
 
     def save_configuration(self, configuration_file):
         '''Saving configuration
@@ -238,11 +308,11 @@ class FEI4Register(object):
             Filename of the configuration file.
         '''
         if not isinstance(configuration_file, tb.file.File) and os.path.splitext(configuration_file)[1].strip().lower() != ".h5":
-            return self._save_configuration_to_text_file(configuration_file)
+            return self._save_configuration_to_yaml_file(configuration_file)
         else:
             return self._save_configuration_to_hdf5(configuration_file)
 
-    def _load_configuration_from_text_file(self, configuration_file):
+    def _load_configuration_from_yaml_file(self, configuration_file):
         '''Loading configuration from text files
 
         Parameters
@@ -253,91 +323,11 @@ class FEI4Register(object):
         logging.info("Loading configuration: %s" % configuration_file)
         self.configuration_file = configuration_file
         with open(configuration_file, 'r') as f:
-            config_dict = {}
-            if configuration_file[-5:] == ".yaml":
-                config_dict.update(safe_load(f))
-                for key,value in config_dict['Calibration_Parameters'].iteritems():
-                    config_dict[key] = value
-                for key,value in config_dict['Channels'][0]['Global_Registers'].iteritems():
-                    config_dict[key] = value
-                for key,value in config_dict['Channels'][0]['Pixel_Registers'].iteritems():
-                    config_dict[key] = value
-                config_dict['Chip_ID'] = config_dict['Channels'][0]['Chip_ID']
-                config_dict.pop('Calibration_Parameters')
-                config_dict.pop('Channels')
-            else:
-                f.seek(0)
-                for line in f.readlines():
-                    line = line.partition('#')[0].strip()
-                    if not line:
-                        continue
-                    parts = re.split(r'\s*[=]\s*|\s+', line)
-                    if parts[0] in config_dict:
-                        logging.warning('Item %s in configuration file exists more than once' % parts[0])
-                    try:
-                        config_dict[parts[0]] = ast.literal_eval(parts[1])
-                    except SyntaxError:
-                        config_dict[parts[0]] = parts[1].strip()
-                    except ValueError:
-                        config_dict[parts[0]] = parts[1].strip()
+            config_dict = safe_load(f)
+        return config_dict
 
-        if 'Flavor' in config_dict:
-            flavor = config_dict.pop('Flavor')
-            if self.flavor:
-                pass
-            else:
-                self.init_fe_type(flavor)
-        else:
-            if self.flavor:
-                pass
-            else:
-                raise ValueError('Flavor not specified')
-        if 'Chip_ID' in config_dict:
-            chip_id = config_dict.pop('Chip_ID')
-            if self.chip_address:
-                pass
-            else:
-                self.broadcast = True if chip_id & 0x8 else False
-                self.set_chip_address(chip_id & 0x7)
-        elif 'Chip_Address' in config_dict:
-            chip_address = config_dict.pop('Chip_Address')
-            if self.chip_address:
-                pass
-            else:
-                self.set_chip_address(chip_address)
-        else:
-            if self.chip_id_initialized:
-                pass
-            else:
-                raise ValueError('Chip address not specified')
-        global_registers_configured = []
-        pixel_registers_configured = []
-        for key in config_dict.keys():
-            value = config_dict.pop(key)
-            if key in self.global_registers:
-                self.set_global_register_value(key, value)
-                global_registers_configured.append(key)
-            elif key in self.pixel_registers:
-                self.set_pixel_register_value(key, value)
-                pixel_registers_configured.append(key)
-            elif key in self.calibration_parameters:
-                self.calibration_parameters[key] = value
-            else:
-                self.miscellaneous[key] = value
-
-        global_registers = self.get_global_register_attributes('name', readonly=False)
-        pixel_registers = self.pixel_registers.keys()
-        global_registers_not_configured = set(global_registers).difference(global_registers_configured)
-        pixel_registers_not_configured = set(pixel_registers).difference(pixel_registers_configured)
-        if global_registers_not_configured:
-            logging.warning("Following global register(s) not configured: {}".format(', '.join('\'' + reg + '\'' for reg in global_registers_not_configured)))
-        if pixel_registers_not_configured:
-            logging.warning("Following pixel register(s) not configured: {}".format(', '.join('\'' + reg + '\'' for reg in pixel_registers_not_configured)))
-        if self.miscellaneous:
-            logging.warning("Found following unknown parameter(s): {}".format(', '.join('\'' + parameter + '\'' for parameter in self.miscellaneous.iterkeys())))
-
-    def _save_configuration_to_text_file(self, configuration_file):
-        '''Saving configuration to text files
+    def _save_configuration_to_yaml_file(self, configuration_file):
+        '''Saving configuration to yaml files
 
         Parameters
         ----------
@@ -348,13 +338,14 @@ class FEI4Register(object):
         if os.path.split(configuration_path)[1] == 'configs':
             configuration_path = os.path.split(configuration_path)[0]
         filename = os.path.splitext(filename)[0].strip()
-        self.configuration_file = os.path.join(os.path.join(configuration_path, 'configs'), filename + ".cfg")
+        self.configuration_file = os.path.join(os.path.join(configuration_path, 'configs'), filename + ".yaml")
         if os.path.isfile(self.configuration_file):
             logging.warning("Overwriting configuration: %s" % self.configuration_file)
         else:
             logging.info("Saving configuration: %s" % self.configuration_file)
         pixel_reg_dict = {}
-        for path in ["tdacs", "fdacs", "masks", "configs"]:
+        for path in ["tdacs", "fdacs", "masks"]:
+            # FIXME
             configuration_file_path = os.path.join(configuration_path, path)
             if not os.path.exists(configuration_file_path):
                 os.makedirs(configuration_file_path)
@@ -374,28 +365,33 @@ class FEI4Register(object):
                     dac_config_path = os.path.join(configuration_file_path, "_".join([mask['name'].lower(), filename]) + ".dat")
                     write_pixel_mask_config(dac_config_path, mask['value'])
                     pixel_reg_dict[mask['name']] = os.path.relpath(dac_config_path, os.path.dirname(self.configuration_file))
-            elif path == "configs":
-                with open(self.configuration_file, 'w') as f:
-                    lines = []
-                    lines.append("# FEI4 Flavor\n")
-                    lines.append('%s %s\n' % ('Flavor', self.flavor))
-                    lines.append("\n# FEI4 Chip ID\n")
-                    lines.append('%s %d\n' % ('Chip_ID', self.chip_id))
-                    lines.append("\n# FEI4 Global Registers\n")
-                    global_regs = self.get_global_register_objects(readonly=False)
-                    for global_reg in sorted(global_regs, key=itemgetter('name')):
-                        lines.append('%s %d\n' % (global_reg['name'], global_reg['value']))
-                    lines.append("\n# FEI4 Pixel Registers\n")
-                    for key in sorted(pixel_reg_dict):
-                        lines.append('%s %s\n' % (key, pixel_reg_dict[key]))
-                    lines.append("\n# FEI4 Calibration Parameters\n")
-                    for key in self.calibration_parameters:
-                        lines.append('%s %s\n' % (key, self.calibration_parameters[key]))
-                    if self.miscellaneous:
-                        lines.append("\n# Miscellaneous\n")
-                        for key, value in self.miscellaneous.iteritems():
-                            lines.append('%s %s\n' % (key, value))
-                    f.writelines(lines)
+        path = "configs"
+        with open(self.configuration_file, 'w') as f:
+            config_dict = {}
+            config_dict['Flavor'] = self.flavor
+            config_dict['Calibration_Parameters'] = {}
+            for key, value in self.calibration_parameters.iteritems():
+                config_dict['Calibration_Parameters'][key] = value
+
+            global_regs = self.get_global_register_objects(readonly=False)
+            config_dict['Channels'] = []
+            #FIXME
+            channel = {}
+            channel['Channel_Number'] = 0
+            channel['Chip_ID'] = self.chip_id
+            channel['Global_Registers'] = {}
+            for global_reg in global_regs:
+                channel['Global_Registers'][global_reg['name']] = global_reg['value']
+            channel['Pixel_Registers'] = {}
+            for key, value in pixel_reg_dict.iteritems():
+                channel['Pixel_Registers'][key] = value
+            if self.miscellaneous:
+                channel['Miscellaneous'] = {}
+                for key, value in self.miscellaneous.iteritems():
+                    channel['Miscellaneous'][key] = value
+            config_dict['Channels'].append(channel)
+
+            safe_dump(config_dict,f, default_flow_style = False)
 
     def _load_configuration_from_hdf5(self, configuration_file, node=''):
         '''Loading configuration from HDF5 file
