@@ -9,6 +9,7 @@ import copy
 import struct
 import tables as tb
 import datetime
+from yaml import safe_load, safe_dump
 from contextlib import contextmanager
 from importlib import import_module
 from operator import itemgetter
@@ -252,21 +253,33 @@ class FEI4Register(object):
         logging.info("Loading configuration: %s" % configuration_file)
         self.configuration_file = configuration_file
         with open(configuration_file, 'r') as f:
-            f.seek(0)
             config_dict = {}
-            for line in f.readlines():
-                line = line.partition('#')[0].strip()
-                if not line:
-                    continue
-                parts = re.split(r'\s*[=]\s*|\s+', line)
-                if parts[0] in config_dict:
-                    logging.warning('Item %s in configuration file exists more than once' % parts[0])
-                try:
-                    config_dict[parts[0]] = ast.literal_eval(parts[1])
-                except SyntaxError:
-                    config_dict[parts[0]] = parts[1].strip()
-                except ValueError:
-                    config_dict[parts[0]] = parts[1].strip()
+            if configuration_file[-5:] == ".yaml":
+                config_dict.update(safe_load(f))
+                for key,value in config_dict['Calibration_Parameters'].iteritems():
+                    config_dict[key] = value
+                for key,value in config_dict['Channels'][0]['Global_Registers'].iteritems():
+                    config_dict[key] = value
+                for key,value in config_dict['Channels'][0]['Pixel_Registers'].iteritems():
+                    config_dict[key] = value
+                config_dict['Chip_ID'] = config_dict['Channels'][0]['Chip_ID']
+                config_dict.pop('Calibration_Parameters')
+                config_dict.pop('Channels')
+            else:
+                f.seek(0)
+                for line in f.readlines():
+                    line = line.partition('#')[0].strip()
+                    if not line:
+                        continue
+                    parts = re.split(r'\s*[=]\s*|\s+', line)
+                    if parts[0] in config_dict:
+                        logging.warning('Item %s in configuration file exists more than once' % parts[0])
+                    try:
+                        config_dict[parts[0]] = ast.literal_eval(parts[1])
+                    except SyntaxError:
+                        config_dict[parts[0]] = parts[1].strip()
+                    except ValueError:
+                        config_dict[parts[0]] = parts[1].strip()
 
         if 'Flavor' in config_dict:
             flavor = config_dict.pop('Flavor')
